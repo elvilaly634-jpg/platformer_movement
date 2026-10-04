@@ -1,5 +1,5 @@
+using System;
 using System.Collections.Generic;
-
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -12,11 +12,15 @@ public enum state
     wall_sliding,
     standing,
     wall_jumping,
-    knockback
+    knockback,
+    air_born
 }
 public enum side
 {
-    
+    up,
+    down,
+    left,
+    right,
     up_right,
     up_left,
     down_right,
@@ -52,6 +56,8 @@ public class rays
 
 public class movement : MonoBehaviour
 {
+    
+    
     public float knockback_cooldown=0.2f;
     float knockback_timer;
     float wall_jump_timer;
@@ -60,7 +66,7 @@ public class movement : MonoBehaviour
     public float sliding_gravity_scale=0.5f;
     public float wall_push=7;
     bool can_dash=true;
-    public float horizontal;
+    [NonSerialized]public float horizontal;
     public float correct_distance=2;
     public float dashing_speed=50;
     
@@ -78,64 +84,33 @@ public class movement : MonoBehaviour
     float gravityscale;
     List<rays> directions_rays=new List<rays>();
     public LayerMask obstacle_layers_to_hit;
-    
+    bool buffer_jump=false;
+    float jump_buffer_timer;
+    public float jump_buffer_cooldown=0.2f;
     side side_horizontal;
     side side_vertical;
     Vector2 directionx;
     Vector2 directiony;
     BoxCollider2D collider2D;
-    int dash_direction;
-    public state current_state=state.walking;
+    
+    [NonSerialized]public state current_state=state.walking;
     public KeyCode dashing_button=KeyCode.LeftShift;
+    public float apex_gravity_scale=0.9f;
+    public float falling_gravity_scale=2.2f;
+    public float attack_range=1;
+    float walking_speed;
+    public LayerMask enemy_layers;
+    [NonSerialized] public int last_direction=1;
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
     {
+        walking_speed=speed;
         rb=GetComponent<Rigidbody2D>();
         gravityscale=rb.gravityScale;
         collider2D=GetComponent<BoxCollider2D>();
+       
+        directions_rays=create_rays(obstacle_layers_to_hit);
         
-        for(int y = -1; y < 2; y += 2)
-        {
-            for (int x = -1; x < 2; x += 2)
-            {
-
-                if (y == -1)
-                {
-                    directiony=Vector2.down;
-                    if (x == -1)
-                    {
-                        directionx=Vector2.left;
-                        side_horizontal=side.down_left;
-                        side_vertical=side.left_bottom;
-                    }
-                    else
-                    {
-                        directionx=Vector2.right;
-                        side_horizontal=side.down_right;
-                        side_vertical=side.right_bottom;
-                    }
-                }
-                else
-                {
-                    directiony=Vector2.up;
-                    if (x == -1)
-                    {
-                        directionx=Vector2.left;
-                        side_horizontal=side.up_left;
-                        side_vertical=side.left_top;
-                    }
-                    else
-                    {
-                        directionx=Vector2.right;
-                        side_horizontal=side.up_right;
-                        side_vertical=side.right_top;
-                    }
-                }
-                Vector2 corner = transform.TransformPoint(collider2D.offset + Vector2.Scale(collider2D.size / 2, new Vector2(x, y)));
-                directions_rays.Add(new rays(side_horizontal,directiony,obstacle_layers_to_hit,corner,x,y));
-                directions_rays.Add(new rays(side_vertical,directionx,obstacle_layers_to_hit,corner,x,y));
-            }
-        }
         dash_slider.maxValue=dash_cooldown;
 
     }
@@ -146,15 +121,35 @@ public class movement : MonoBehaviour
 
     void FixedUpdate()
     {
+        
         #region dashing_walking_jumping
             horizontal=Input.GetAxisRaw("Horizontal");
-
+            if(horizontal!=0){last_direction=(int)horizontal;}
             if (Input.GetKeyDown(KeyCode.Space))
             {
-                jump(jump_force);
+                if(is_grounded() || wall_sliding)
+                {
+                    jump(jump_force);
+                }
+                else
+                {
+                    buffer_jump=true;
+                    jump_buffer_timer=Time.time;
+                }
                 
             }
-
+            else if (buffer_jump && Time.time - jump_buffer_timer <= jump_buffer_cooldown)
+            {
+                if(get_side(new List<side> { side.down_left, side.down_right }) || wall_sliding)
+                {
+                    jump(jump_force);
+                    buffer_jump=false;
+                }
+            }
+            else
+            {
+                buffer_jump=false;
+            }
             if (Time.time - dash_cooldown_timer >= dash_cooldown)
             {
                 can_dash=true;
@@ -162,14 +157,19 @@ public class movement : MonoBehaviour
             dash_slider.value=Time.time-dash_cooldown_timer;
             if (Input.GetKeyDown(dashing_button)&&current_state!=state.dashing&&can_dash)
             {
-                dash_direction=(int)Mathf.Round(horizontal);
+                
                 current_state=state.dashing;
             }
 
-            if (rb.linearVelocityY < 1 && rb.linearVelocityY > -1f&&current_state==state.walking)
+            
+            if (rb.linearVelocityY < 0.7 && rb.linearVelocityY > -0.7f&&current_state==state.walking)
             {
                 
-                rb.gravityScale=1f;
+                rb.gravityScale=apex_gravity_scale;
+            }
+            else if (rb.linearVelocityY <= -1.5f)
+            {
+                rb.gravityScale=falling_gravity_scale;
             }
             else{rb.gravityScale=gravityscale;}
             
@@ -201,7 +201,7 @@ public class movement : MonoBehaviour
                 }
                 
             }
-            update_rays(0.3f,0.5f,0.4f,0.4f,directions_rays);
+            update_rays(0.3f,0.5f,0.5f,0.5f,directions_rays);
             correct();
         #endregion
 
@@ -227,11 +227,11 @@ public class movement : MonoBehaviour
 
         #region knockback
 
-        if (current_state == state.knockback&&Time.time-knockback_timer>=knockback_cooldown)
-        {
-            current_state=state.walking;
-            rb.gravityScale=gravityscale;
-        }
+            if (current_state == state.knockback&&Time.time-knockback_timer>=knockback_cooldown)
+            {
+                current_state=state.walking;
+                rb.gravityScale=gravityscale;
+            }
         #endregion
 
     }
@@ -241,7 +241,7 @@ public class movement : MonoBehaviour
         current_state=state.knockback;
         knockback_timer=Time.time;
 
-        rb.linearVelocity=new Vector2(direction.x*strength*1.1f,direction.y*strength*1.5f);
+        rb.linearVelocity=new Vector2(direction.x*strength*0.9f,direction.y*strength*1.5f);
         
     }
 
@@ -265,7 +265,7 @@ public class movement : MonoBehaviour
 
     bool is_grounded()
     {
-        return get_specific_sides(new List<side>{side.down_left,side.down_right});
+        return get_side(new List<side>{side.down_left,side.down_right});
     }
     bool is_wall_sliding()
     {
@@ -314,36 +314,44 @@ public class movement : MonoBehaviour
         }
         return sides;
     }
-
+    bool get_one_side(side target_side)
+    {
+        List<side> sides=get_sides();
+        if(sides.Contains(target_side)){return true;}
+        return false;
+    }
     void dash(float dashing_speed)
     {
-        rb.linearVelocity=new Vector2(dashing_speed*dash_direction,rb.linearVelocityY);
+        rb.linearVelocity=new Vector2(dashing_speed*last_direction,rb.linearVelocityY);
     }
 
     void update_rays(float top,float bottom,float left,float right,List<rays> target_list)
     {
-        foreach(rays rays in target_list)
+        
+        foreach(rays ray in target_list)
         {
-            Vector2 corner = transform.TransformPoint(collider2D.offset + Vector2.Scale(collider2D.size / 2, new Vector2(rays.x, rays.y)));
-            rays.origin=corner;
-            if (rays.side == side.up_left | rays.side == side.up_right)
+            Vector2 corner = transform.TransformPoint(collider2D.offset + Vector2.Scale(collider2D.size / 2, new Vector2(ray.x, ray.y)));
+            ray.origin=corner;
+            if (ray.side == side.up_left | ray.side == side.up_right)
             {
-                rays.update_ray(top);
+                ray.update_ray(top);
             }
-            else if (rays.side == side.down_left | rays.side == side.down_right)
+            else if (ray.side == side.down_left | ray.side == side.down_right)
             {
-                rays.update_ray(bottom);
+                ray.update_ray(bottom);
             }
-            else if (rays.side == side.left_bottom | rays.side == side.left_top)
+            else if (ray.side == side.left_bottom | ray.side == side.left_top)
             {
-                rays.update_ray(left);
+                ray.update_ray(left);
             }
-            else if (rays.side == side.right_bottom | rays.side == side.right_top)
+            else if (ray.side == side.right_bottom | ray.side == side.right_top)
             {
-                rays.update_ray(right);
+                ray.update_ray(right);
             }
             
+            
         }
+        
     }
     List<Collider2D> get_colliders(List<rays> target_list){
         List<Collider2D> colliders=new List<Collider2D>();
@@ -369,19 +377,35 @@ public class movement : MonoBehaviour
 
     void correct()
     {
-        if (current_state == state.walking | current_state == state.dashing)
+        if (current_state == state.walking || current_state == state.dashing)
         {
-            if (get_ray(side.left_bottom) != null&&get_ray(side.left_top)==null &&(current_state==state.walking||current_state==state.dashing)&&get_ray(side.down_left)!=null&&get_ray(side.down_right)!=null)
+            if (get_one_side(side.left_bottom) && !get_one_side(side.left_top)&&is_grounded())
             {
-                if (get_ray(side.up_left) == null && get_ray(side.up_right) == null)
+                if (!get_specific_sides(new List<side>{side.up_left,side.up_right}))
                 {
                     RaycastHit2D midle_cast=Physics2D.Raycast(transform.position,Vector2.left,1,obstacle_layers_to_hit);
                     if (midle_cast.collider == null&&horizontal<0)
-                    {   Debug.Log("corrected");
+                    {   
                         rb.position=new Vector2(rb.position.x,rb.position.y+0.1f);
                         if (get_ray(side.left_bottom) == null)
                         {
                             rb.position=new Vector2(rb.position.x-0.4f,rb.position.y);
+                        }
+                    }
+                }
+                
+            }
+            else if (get_one_side(side.right_bottom) && !get_one_side(side.right_top)&&is_grounded())
+            {
+                if (!get_specific_sides(new List<side>{side.up_left,side.up_right}))
+                {
+                    RaycastHit2D midle_cast=Physics2D.Raycast(transform.position,Vector2.right,1,obstacle_layers_to_hit);
+                    if (midle_cast.collider == null&&horizontal>0)
+                    {   
+                        rb.position=new Vector2(rb.position.x,rb.position.y+0.1f);
+                        if (get_ray(side.right_bottom) == null)
+                        {
+                            rb.position=new Vector2(rb.position.x+0.4f,rb.position.y);
                         }
                     }
                 }
@@ -414,6 +438,56 @@ public class movement : MonoBehaviour
 
         return false;
     }
+    
+    
+    List<rays> create_rays(LayerMask target_layers)
+    {
+        List<rays> temp=new List<rays>();
+        for(int y = -1; y < 2; y += 2)
+        {
+            for (int x = -1; x < 2; x += 2)
+            {
+
+                if (y == -1)
+                {
+                    directiony=Vector2.down;
+                    if (x == -1)
+                    {
+                        directionx=Vector2.left;
+                        side_horizontal=side.down_left;
+                        side_vertical=side.left_bottom;
+                    }
+                    else
+                    {
+                        directionx=Vector2.right;
+                        side_horizontal=side.down_right;
+                        side_vertical=side.right_bottom;
+                    }
+                }
+                else
+                {
+                    directiony=Vector2.up;
+                    if (x == -1)
+                    {
+                        directionx=Vector2.left;
+                        side_horizontal=side.up_left;
+                        side_vertical=side.left_top;
+                    }
+                    else
+                    {
+                        directionx=Vector2.right;
+                        side_horizontal=side.up_right;
+                        side_vertical=side.right_top;
+                    }
+                }
+                Vector2 corner = transform.TransformPoint(collider2D.offset + Vector2.Scale(collider2D.size / 2, new Vector2(x, y)));
+                temp.Add(new rays(side_horizontal,directiony,target_layers,corner,x,y));
+                temp.Add(new rays(side_vertical,directionx,target_layers,corner,x,y));
+            }
+        }
+        return temp;
+    }
+    
     public rays get_ray(side tartget_side)
     {
         List<rays> rays1=get_rays();
